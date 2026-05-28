@@ -39,7 +39,7 @@ const FontLoader = () => (
 ───────────────────────────────────────────── */
 const USE_API   = true;                      // ← ローカルで繋ぐときは true に
 const API_BASE  = import.meta.env.VITE_API_BASE || "http://localhost:3000";
-const DEV_USER  = "3a5d7d6c-0a55-4554-829d-64c126793982";                          // ← seedで出たUUIDを入れる（dev認証の初期値）
+const DEV_USER  = "97a3c260-639e-4aaa-88d2-18fa4b6de391";                          // ← seedで出たUUIDを入れる（dev認証の初期値）
 
 // ログインで切り替えられる現在のユーザーID（dev認証）
 let currentUserId = DEV_USER;
