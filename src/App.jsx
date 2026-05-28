@@ -1940,22 +1940,13 @@ const MyListingsScreen = ({ joinedListings, postedListings, onSelect, onNavigate
    PHONE FRAME
 ───────────────────────────────────────────── */
 const PhoneFrame = ({ children }) => (
-  <div style={{ display:"flex", justifyContent:"center", alignItems:"flex-start", minHeight:"100vh",
-    padding:"32px 16px 60px", background:"linear-gradient(160deg,#E8DFC8 0%,#D4C8A8 100%)",
+  <div style={{ display:"flex", justifyContent:"center", alignItems:"stretch", minHeight:"100vh",
+    background:"linear-gradient(160deg,#E8DFC8 0%,#D4C8A8 100%)",
     fontFamily:font.jp }}>
-    <div style={{ width:320, background:C.surface, borderRadius:42,
-      border:"1.5px solid rgba(180,140,60,0.22)",
-      boxShadow:"0 24px 64px rgba(80,50,0,0.22), inset 0 1px 0 rgba(255,255,255,0.8)",
+    <div style={{ width:"100%", maxWidth:480, background:C.surface,
+      boxShadow:"0 0 64px rgba(80,50,0,0.12)",
       overflow:"hidden", display:"flex", flexDirection:"column",
-      minHeight:640, position:"relative" }}>
-      {/* Notch */}
-      <div style={{ width:90, height:24, background:C.ink, borderRadius:"0 0 16px 16px",
-        margin:"0 auto", flexShrink:0, zIndex:10 }}/>
-      {/* Status bar */}
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
-        padding:"6px 20px 3px", fontFamily:font.num, fontSize:11, fontWeight:600, color:C.soft, flexShrink:0 }}>
-        <span>9:41</span><span>🔋</span>
-      </div>
+      minHeight:"100vh", position:"relative" }}>
       {/* Content */}
       <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden", position:"relative" }}>
         {children}
