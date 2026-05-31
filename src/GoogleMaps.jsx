@@ -11,13 +11,12 @@
 // Viteプロジェクトで:  npm install @react-google-maps/api
 // ──────────────────────────────────────────────────────────────
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   GoogleMap, useJsApiLoader, MarkerF, InfoWindowF, Autocomplete
 } from "@react-google-maps/api";
 
-// ★ ここにAPIキーを貼り付ける（取得手順は GOOGLE_MAPS_SETUP.md）
-const GOOGLE_MAPS_API_KEY = "";
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || "";
 
 // Places Autocomplete に必要なライブラリ
 const LIBRARIES = ["places"];
@@ -40,6 +39,37 @@ export function RealMapView({ listings, onSelect }) {
     libraries: LIBRARIES,
   });
   const [activeId, setActiveId] = useState(null);
+  const mapRef = useRef(null);
+
+  // 座標を持つ募集だけを地図対象にする（座標が変わった時だけ再計算）
+  const mappable = useMemo(
+    () => listings.filter(
+      l => typeof l.store_lat === "number" && typeof l.store_lng === "number"
+    ),
+    [listings]
+  );
+
+  // 地図ロード時・募集変更時に全ピンが収まるよう表示範囲を自動調整
+  const fitToMarkers = useCallback((map) => {
+    if (!map || mappable.length === 0) return;
+    if (mappable.length === 1) {
+      map.setCenter({ lat: mappable[0].store_lat, lng: mappable[0].store_lng });
+      map.setZoom(16);
+      return;
+    }
+    const bounds = new window.google.maps.LatLngBounds();
+    mappable.forEach(l => bounds.extend({ lat: l.store_lat, lng: l.store_lng }));
+    map.fitBounds(bounds, 60);
+  }, [mappable]);
+
+  const onLoad = useCallback((map) => {
+    mapRef.current = map;
+    fitToMarkers(map);
+  }, [fitToMarkers]);
+
+  useEffect(() => {
+    if (mapRef.current) fitToMarkers(mapRef.current);
+  }, [fitToMarkers]);
 
   const markerColor = (l) => {
     const pct = l.confirmed / l.pack;
@@ -72,11 +102,12 @@ export function RealMapView({ listings, onSelect }) {
     <div style={{ flex:1, display:"flex", flexDirection:"column" }}>
       <GoogleMap
         mapContainerStyle={{ width:"100%", flex:1, minHeight:200 }}
-        center={listings[0] ? { lat:listings[0].store_lat, lng:listings[0].store_lng } : DEFAULT_CENTER}
+        center={mappable[0] ? { lat:mappable[0].store_lat, lng:mappable[0].store_lng } : DEFAULT_CENTER}
         zoom={15}
+        onLoad={onLoad}
         options={{ disableDefaultUI:true, zoomControl:true, gestureHandling:"greedy" }}
       >
-        {listings.map(l => (
+        {mappable.map(l => (
           <MarkerF
             key={l.id}
             position={{ lat:l.store_lat, lng:l.store_lng }}
@@ -155,7 +186,7 @@ export function RealStoreMap({ lat, lng, storeName }) {
 // 3. 投稿フォームのスーパー検索（Places Autocomplete）
 //    onSelect({ name, address, lat, lng, placeId }) を返す
 // ══════════════════════════════════════════════
-export function PlacesSearchInput({ onSelect }) {
+export function PlacesSearchInput({ onSelect, types = ["establishment"], placeholder = "スーパー名で検索…" }) {
   const { isLoaded } = useJsApiLoader({
     googleMapsApiKey: GOOGLE_MAPS_API_KEY,
     libraries: LIBRARIES,
@@ -183,7 +214,7 @@ export function PlacesSearchInput({ onSelect }) {
       <input
         value={value}
         onChange={e => { setValue(e.target.value); onSelect({ name:e.target.value }); }}
-        placeholder="例：マルエツ渋谷店（手入力）"
+        placeholder={placeholder + "（手入力）"}
         style={{ width:"100%", padding:"7px 10px", borderRadius:9, border:`1px solid ${C.border}`,
           fontSize:12, fontFamily:font.jp, color:C.ink, outline:"none", background:"#F7F2E8" }}
       />
@@ -196,13 +227,13 @@ export function PlacesSearchInput({ onSelect }) {
       onPlaceChanged={onPlaceChanged}
       options={{
         componentRestrictions: { country: "jp" },
-        types: ["establishment"],
+        types,
       }}
     >
       <input
         value={value}
         onChange={e => setValue(e.target.value)}
-        placeholder="スーパー名で検索…"
+        placeholder={placeholder}
         style={{ width:"100%", padding:"7px 10px", borderRadius:9, border:`1px solid ${C.border}`,
           fontSize:12, fontFamily:font.jp, color:C.ink, outline:"none", background:"#F7F2E8" }}
       />

@@ -27,6 +27,14 @@ const FontLoader = () => (
     .hover-card:active { transform: scale(0.98); }
     .btn-press { transition: transform 0.1s ease, filter 0.1s ease; cursor: pointer; }
     .btn-press:active { transform: scale(0.96); filter: brightness(0.92); }
+    .pac-container { font-family: 'Noto Sans JP', sans-serif !important; font-size: 12px !important; border-radius: 10px !important; border: 1px solid #EDE4D0 !important; box-shadow: 0 4px 16px rgba(0,0,0,0.12) !important; margin-top: 4px !important; overflow: hidden !important; z-index: 9999 !important; }
+    .pac-item { padding: 8px 12px !important; cursor: pointer !important; line-height: 1.6 !important; display: flex !important; align-items: center !important; gap: 8px !important; border-top: 1px solid #EDE4D0 !important; }
+    .pac-item:first-child { border-top: none !important; }
+    .pac-item:hover, .pac-item-selected { background: #FEF0D0 !important; }
+    .pac-icon { width: 16px !important; height: 16px !important; flex-shrink: 0 !important; }
+    .pac-item-query { font-size: 12px !important; color: #1C1208 !important; font-weight: 600 !important; }
+    .pac-matched { font-weight: 700 !important; color: #F5A623 !important; }
+    .pac-container .pac-item span:last-child { font-size: 10px !important; color: #8B7560 !important; }
   `}</style>
 );
 
@@ -39,11 +47,8 @@ const FontLoader = () => (
 ───────────────────────────────────────────── */
 const USE_API   = true;                      // ← ローカルで繋ぐときは true に
 const API_BASE  = import.meta.env.VITE_API_BASE || "http://localhost:3000";
-const DEV_USER  = "97a3c260-639e-4aaa-88d2-18fa4b6de391";                          // ← seedで出たUUIDを入れる（dev認証の初期値）
-
-// ログインで切り替えられる現在のユーザーID（dev認証）
-let currentUserId = DEV_USER;
-function setCurrentUser(id) { currentUserId = id; }
+let authToken = localStorage.getItem("auth_token") || null;
+let currentUserId = null;
 
 class ApiError extends Error {
   constructor(message, status) { super(message); this.status = status; }
@@ -55,7 +60,7 @@ async function apiRequest(method, path, { body, query, auth } = {}) {
     if (v !== undefined && v !== null) url.searchParams.set(k, v);
   });
   const headers = { "Content-Type": "application/json" };
-  if (auth && currentUserId) headers["x-dev-user-id"] = currentUserId;
+  if (auth && authToken) headers["Authorization"] = `Bearer ${authToken}`;
 
   let res;
   try {
@@ -87,6 +92,11 @@ const api = {
   unblockUser: (id)     => apiRequest("DELETE", `/users/${id}/block`, { auth:true }),
   getMyApplications:()  => apiRequest("GET", "/me/applications", { auth:true }),
   getMyListings:    ()  => apiRequest("GET", "/me/listings", { auth:true }),
+  login:     (email, password)           => apiRequest("POST", "/auth/login",    { body:{ email, password } }),
+  register:  (email, password, nickname) => apiRequest("POST", "/auth/register", { body:{ email, password, nickname } }),
+  getMe:     ()                          => apiRequest("GET",  "/users/me",      { auth:true }),
+  updateMe:  (b)                         => apiRequest("PUT",  "/users/me",      { body:b, auth:true }),
+  getUser:   (id)                        => apiRequest("GET",  `/users/${id}`),
 };
 
 /* バックエンドの listing（snake_case）→ UI形式に変換するアダプタ */
@@ -245,18 +255,6 @@ const BackHeader = ({ title, onBack, right }) => (
   </div>
 );
 
-/* Mock map road layer */
-const MapRoads = () => (
-  <>
-    {[35,62].map(t=><div key={t} style={{ position:"absolute", top:`${t}%`, left:0, right:0, height:3, background:"rgba(255,255,255,0.65)" }}/>)}
-    {[28,65].map(l=><div key={l} style={{ position:"absolute", left:`${l}%`, top:0, bottom:0, width:3, background:"rgba(255,255,255,0.65)" }}/>)}
-    {/* building blocks */}
-    {[[9,8,18,18],[9,72,18,17],[74,10,14,18],[74,70,14,16]].map(([l,t,w,h],i)=>(
-      <div key={i} style={{ position:"absolute", left:`${l}%`, top:`${t}%`, width:`${w}%`, height:`${h}%`,
-        background:"rgba(255,255,255,0.15)", borderRadius:3 }}/>
-    ))}
-  </>
-);
 
 /* ─────────────────────────────────────────────
    LISTING CARD
@@ -296,85 +294,130 @@ const ListingCard = ({ listing, onTap, delay=0 }) => {
 };
 
 /* ─────────────────────────────────────────────
-   SCREEN: ONBOARDING
+   SCREEN: AUTH（ログイン / 新規登録）
 ───────────────────────────────────────────── */
-const DEV_USERS = [
-  { label:"山田さくら（主催者）", id:"" },   // seed の dev-yamada のUUIDを入れる
-  { label:"佐藤たろう（参加済み）", id:"" }, // dev-sato
-  { label:"鈴木はなこ（新規）",   id:"" },   // dev-suzuki
-];
+const AuthScreen = ({ onAuth }) => {
+  const [tab, setTab]           = useState("login");
+  const [email, setEmail]       = useState("");
+  const [password, setPassword] = useState("");
+  const [nickname, setNickname] = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [error, setError]       = useState(null);
 
-const OnboardScreen = ({ onStart }) => {
-  const [picked, setPicked] = useState(null);
+  const canSubmit = email && password && (tab === "login" || nickname);
+
+  const handleSubmit = async () => {
+    if (!canSubmit || loading) return;
+    setError(null);
+    setLoading(true);
+    try {
+      const result = tab === "login"
+        ? await api.login(email, password)
+        : await api.register(email, password, nickname);
+      onAuth(result);
+    } catch (e) {
+      setError(e.message || (tab === "login" ? "ログインに失敗しました" : "登録に失敗しました"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const inputStyle = {
+    width:"100%", padding:"9px 12px", borderRadius:9, border:`1px solid ${C.border}`,
+    fontSize:13, fontFamily:font.jp, color:C.ink, outline:"none", background:C.surface2,
+  };
+
   return (
-  <div style={{ display:"flex", flexDirection:"column", flex:1, background:C.surface, overflow:"hidden" }}>
-    <div style={{ width:"100%", height:185, background:"linear-gradient(160deg,#FEF3DC,#FFE4A0)", flexShrink:0,
-      display:"flex", alignItems:"center", justifyContent:"center", position:"relative", overflow:"hidden" }}>
-      {[["top:14px;left:22px","🥚"],["top:20px;right:26px","🥚"],["bottom:12px;left:38px","🥚"],["bottom:16px;right:40px","🥚"]].map(([s,e],i)=>(
-        <div key={i} style={{ position:"absolute", ...Object.fromEntries(s.split(";").map(x=>x.split(":"))), fontSize:20, opacity:0.25 }}>{e}</div>
-      ))}
-      <div style={{ fontSize:58, animation:"floatEgg 3s ease-in-out infinite", filter:"drop-shadow(0 4px 14px rgba(180,100,0,0.22))" }}>🥚</div>
-    </div>
-    <div style={{ padding:"16px 20px 0", flex:1, display:"flex", flexDirection:"column", overflowY:"auto" }}>
-      <div className="fade-up" style={{ fontFamily:font.num, fontSize:28, fontWeight:700, color:C.dark, letterSpacing:-1, marginBottom:5 }}>
-        たま<span style={{ color:C.warm }}>わり</span>
-      </div>
-      <div className="fade-up" style={{ animationDelay:".05s", fontSize:12, color:C.muted, lineHeight:1.8, marginBottom:14, fontFamily:font.jp }}>
-        一人暮らしで10個も要らない？<br/>近所の人と集まって一緒に買おう
-      </div>
-      <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:14 }}>
-        {[["📍","近所のスーパーで買い出し募集"],["🗺️","Google Mapsでお店を簡単検索"],["🤝","現地で一緒に買ってその場で分ける"]].map(([icon,text],i)=>(
-          <div key={i} className="fade-up" style={{ animationDelay:`${0.08+i*0.06}s`, display:"flex", alignItems:"center", gap:9,
-            background:C.surface2, borderRadius:10, padding:"7px 11px", border:`1px solid ${C.border}` }}>
-            <span style={{ fontSize:16 }}>{icon}</span>
-            <span style={{ fontSize:12, color:C.ink, fontWeight:500, fontFamily:font.jp }}>{text}</span>
-          </div>
+    <div style={{ display:"flex", flexDirection:"column", flex:1, background:C.surface, overflow:"hidden" }}>
+      <div style={{ width:"100%", height:185, background:"linear-gradient(160deg,#FEF3DC,#FFE4A0)", flexShrink:0,
+        display:"flex", alignItems:"center", justifyContent:"center", position:"relative", overflow:"hidden" }}>
+        {[["top:14px;left:22px","🥚"],["top:20px;right:26px","🥚"],["bottom:12px;left:38px","🥚"],["bottom:16px;right:40px","🥚"]].map(([s,e],i)=>(
+          <div key={i} style={{ position:"absolute", ...Object.fromEntries(s.split(";").map(x=>x.split(":"))), fontSize:20, opacity:0.25 }}>{e}</div>
         ))}
+        <div style={{ fontSize:58, animation:"floatEgg 3s ease-in-out infinite", filter:"drop-shadow(0 4px 14px rgba(180,100,0,0.22))" }}>🥚</div>
       </div>
 
-      {/* API有効＆ユーザーID設定済みのとき：ログインユーザー選択 */}
-      {USE_API && DEV_USERS.some(u => u.id) ? (
-        <>
-          <div style={{ fontSize:10, color:C.muted, fontWeight:600, marginBottom:6, fontFamily:font.jp }}>ログインするユーザーを選択（開発用）</div>
-          <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:12 }}>
-            {DEV_USERS.filter(u=>u.id).map((u,i)=>(
-              <button key={i} onClick={()=>setPicked(u.id)} className="btn-press"
-                style={{ padding:"9px 12px", borderRadius:10, textAlign:"left", cursor:"pointer",
-                  border: picked===u.id ? "none" : `1px solid ${C.border}`,
-                  background: picked===u.id ? C.warm : C.surface,
-                  color: picked===u.id ? "#fff" : C.ink,
-                  fontSize:12, fontWeight:600, fontFamily:font.jp }}>
-                {picked===u.id ? "✓ " : "👤 "}{u.label}
-              </button>
-            ))}
+      <div style={{ padding:"16px 20px 0", flex:1, display:"flex", flexDirection:"column", overflowY:"auto" }}>
+        <div className="fade-up" style={{ fontFamily:font.num, fontSize:28, fontWeight:700, color:C.dark, letterSpacing:-1, marginBottom:5 }}>
+          たま<span style={{ color:C.warm }}>わり</span>
+        </div>
+        <div className="fade-up" style={{ animationDelay:".05s", fontSize:12, color:C.muted, lineHeight:1.8, marginBottom:14, fontFamily:font.jp }}>
+          一人暮らしで10個も要らない？<br/>近所の人と集まって一緒に買おう
+        </div>
+
+        {/* タブ */}
+        <div style={{ display:"flex", gap:6, marginBottom:14 }}>
+          {[["login","ログイン"],["register","新規登録"]].map(([v,label])=>(
+            <button key={v} onClick={()=>{ setTab(v); setError(null); }} className="btn-press"
+              style={{ flex:1, padding:"7px 0", borderRadius:9, border:"none",
+                background: tab===v ? C.dark : C.surface2,
+                color: tab===v ? "#fff" : C.muted,
+                fontSize:12, fontWeight:700, fontFamily:font.jp, cursor:"pointer", transition:"all 0.2s" }}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* フォーム */}
+        <div style={{ display:"flex", flexDirection:"column", gap:9 }}>
+          {tab === "register" && (
+            <div>
+              <div style={{ fontSize:10, color:C.muted, fontWeight:600, marginBottom:4, fontFamily:font.jp }}>
+                ニックネーム<span style={{ color:C.red }}>*</span>
+              </div>
+              <input value={nickname} onChange={e=>setNickname(e.target.value)}
+                placeholder="例：田中さくら" style={inputStyle}/>
+            </div>
+          )}
+          <div>
+            <div style={{ fontSize:10, color:C.muted, fontWeight:600, marginBottom:4, fontFamily:font.jp }}>
+              メールアドレス<span style={{ color:C.red }}>*</span>
+            </div>
+            <input value={email} onChange={e=>setEmail(e.target.value)} type="email"
+              placeholder="example@email.com"
+              onKeyDown={e=>{ if(e.key==="Enter") handleSubmit(); }}
+              style={inputStyle}/>
           </div>
-          <button onClick={()=>{ setCurrentUser(picked); onStart(); }} disabled={!picked} className="btn-press"
-            style={{ width:"100%", padding:11, border:"none", borderRadius:13, marginBottom:12,
-              background: picked ? C.dark : "#ccc", color:"#fff", fontSize:14, fontWeight:700,
-              fontFamily:font.jp, cursor: picked?"pointer":"default" }}>
-            このユーザーで始める →
-          </button>
-        </>
-      ) : (
-        <>
-          <button onClick={onStart} className="btn-press" style={{ width:"100%", padding:11, background:C.dark, border:"none",
-            borderRadius:13, color:"#fff", fontSize:14, fontWeight:700, fontFamily:font.jp, cursor:"pointer", marginBottom:7 }}>
-            電話番号で始める →
-          </button>
-          <div style={{ fontSize:10, color:C.muted, textAlign:"center", fontFamily:font.jp, marginBottom:12 }}>ログイン / 新規登録</div>
-        </>
-      )}
+          <div>
+            <div style={{ fontSize:10, color:C.muted, fontWeight:600, marginBottom:4, fontFamily:font.jp }}>
+              パスワード（8文字以上）<span style={{ color:C.red }}>*</span>
+            </div>
+            <input value={password} onChange={e=>setPassword(e.target.value)} type="password"
+              placeholder="••••••••"
+              onKeyDown={e=>{ if(e.key==="Enter") handleSubmit(); }}
+              style={inputStyle}/>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ marginTop:10, padding:"8px 12px", background:C.redBg, border:`1px solid ${C.red}`,
+            borderRadius:9, fontSize:11, color:C.red, fontFamily:font.jp }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        <button onClick={handleSubmit} disabled={loading || !canSubmit} className="btn-press"
+          style={{ width:"100%", marginTop:14, padding:11, border:"none", borderRadius:13, marginBottom:12,
+            background: loading || !canSubmit ? "#ccc" : C.dark,
+            color:"#fff", fontSize:14, fontWeight:700, fontFamily:font.jp,
+            cursor: canSubmit && !loading ? "pointer" : "default",
+            display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+          {loading
+            ? <><div style={{ width:16, height:16, border:"2px solid rgba(255,255,255,0.4)", borderTopColor:"#fff",
+                borderRadius:"50%", animation:"spin 0.8s linear infinite" }}/> 処理中…</>
+            : tab === "login" ? "ログイン →" : "アカウントを作成 →"
+          }
+        </button>
+      </div>
     </div>
-  </div>
   );
 };
 
 /* ─────────────────────────────────────────────
    SCREEN: FEED (LIST + MAP)
 ───────────────────────────────────────────── */
-const FeedScreen = ({ listings, loading, error, onRetry, onRefresh, locName, locating, onLocate, notifications = [], onSelect, onPost, onNavigate, unreadTotal }) => {
+const FeedScreen = ({ listings, loading, error, onRetry, onRefresh, locName, locating, onLocate, radius, onRadiusChange, notifications = [], onSelect, onPost, onNavigate, unreadTotal }) => {
   const [view, setView] = useState("list");
-  const [selectedMapId, setSelectedMapId] = useState(null);
   const [showFilter, setShowFilter] = useState(false);
   const [filters, setFilters] = useState({ size:"all", sort:"distance", availableOnly:false });
   const [keyword, setKeyword] = useState("");
@@ -396,14 +439,6 @@ const FeedScreen = ({ listings, loading, error, onRetry, onRefresh, locName, loc
 
   const filterActive = filters.size !== "all" || filters.availableOnly || filters.sort !== "distance";
 
-  const selectedMarker = listings.find(l=>l.id===selectedMapId);
-
-  const markerColor = (l) => {
-    const pct = l.confirmed/l.pack;
-    if(pct>=0.9) return C.red;
-    if(pct>=0.5) return C.green;
-    return C.dark;
-  };
 
   // プルダウン更新（リスト先頭で下方向にドラッグ）
   const handleTouchStart = (e) => { pullStart.current = e.touches[0].clientY; };
@@ -481,6 +516,21 @@ const FeedScreen = ({ listings, loading, error, onRetry, onRefresh, locName, loc
               transition:"all 0.2s" }}>
             絞り込み {showFilter ? "▴" : "▾"}{filterActive ? " ●" : ""}
           </button>
+        </div>
+
+        {/* 探索半径セレクター */}
+        <div style={{ display:"flex", gap:5, marginTop:8, alignItems:"center" }}>
+          <span style={{ fontSize:10, color:C.muted, fontWeight:600, fontFamily:font.jp, whiteSpace:"nowrap" }}>📍 範囲</span>
+          {[[1000,"1km"],[2000,"2km"],[5000,"5km"]].map(([m,label])=>(
+            <button key={m} onClick={()=>onRadiusChange && onRadiusChange(m)} className="btn-press"
+              style={{ flex:1, padding:"4px 0", borderRadius:7,
+                border: radius===m ? "none" : `1px solid ${C.border}`,
+                background: radius===m ? C.warm : C.surface2,
+                color: radius===m ? "#fff" : C.soft,
+                fontSize:11, fontWeight:600, fontFamily:font.num, cursor:"pointer", transition:"all 0.15s" }}>
+              {label}
+            </button>
+          ))}
         </div>
 
         {/* Filter panel */}
@@ -620,75 +670,7 @@ const FeedScreen = ({ listings, loading, error, onRetry, onRefresh, locName, loc
       {/* MAP VIEW */}
       {view==="map" && (
         <div className="fade-in" style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-          {/* Map */}
-          <div style={{ flex:1, position:"relative", overflow:"hidden",
-            background:"linear-gradient(160deg,#E8F5E9,#C8E6C9 50%,#A5D6A7)", minHeight:200 }}>
-            <MapRoads/>
-            {/* Current location */}
-            <div style={{ position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-50%)" }}>
-              <div style={{ width:14, height:14, borderRadius:"50%", background:C.blue,
-                border:"3px solid #fff", animation:"pulse 2s infinite",
-                boxShadow:"0 0 0 5px rgba(44,111,172,0.2)" }}/>
-            </div>
-            {/* Markers */}
-            {filtered.map(l=>(
-              <div key={l.id} onClick={()=>setSelectedMapId(l.id===selectedMapId?null:l.id)}
-                style={{ position:"absolute", top:`${l.lat*100}%`, left:`${l.lng*100}%`,
-                  transform:"translate(-50%,-100%)", display:"flex", flexDirection:"column",
-                  alignItems:"center", cursor:"pointer",
-                  filter: selectedMapId===l.id ? "drop-shadow(0 3px 8px rgba(0,0,0,0.3))" : "none",
-                  transition:"transform 0.2s", zIndex: selectedMapId===l.id ? 5:1 }}>
-                <div style={{ background:markerColor(l), color:"#fff", borderRadius:"10px 10px 10px 0",
-                  padding:"3px 7px", fontSize:9, fontWeight:700, fontFamily:font.jp,
-                  boxShadow:"0 2px 6px rgba(0,0,0,0.22)", whiteSpace:"nowrap",
-                  border: selectedMapId===l.id ? "2px solid #fff" : "none" }}>
-                  {l.confirmed}/{l.pack} {l.pack-l.confirmed===0 ? "満員" : `残${l.pack-l.confirmed}個`}
-                </div>
-                <div style={{ fontSize:16, lineHeight:1 }}>🥚</div>
-              </div>
-            ))}
-            {/* Controls */}
-            <div style={{ position:"absolute", top:8, right:8, display:"flex", flexDirection:"column", gap:3 }}>
-              {["＋","－","📍"].map((s,i)=>(
-                <div key={i} style={{ width:28, height:28, borderRadius:8, background:"rgba(255,255,255,0.95)",
-                  border:"1px solid rgba(0,0,0,0.1)", display:"flex", alignItems:"center", justifyContent:"center",
-                  fontSize:i===2?14:16, fontWeight:600, cursor:"pointer", color:C.ink }}>{s}</div>
-              ))}
-            </div>
-            <div style={{ position:"absolute", bottom:4, right:7, fontSize:7, color:"rgba(0,0,0,0.35)", fontFamily:font.num }}>Powered by Google</div>
-            {/* Legend */}
-            <div style={{ position:"absolute", bottom:6, left:8, display:"flex", gap:6, alignItems:"center" }}>
-              {[[C.green,"余裕あり"],[C.dark,"募集中"],[C.red,"残りわずか"]].map(([c,l])=>(
-                <div key={l} style={{ display:"flex", alignItems:"center", gap:3, background:"rgba(255,255,255,0.88)",
-                  borderRadius:6, padding:"2px 5px", fontSize:8, fontFamily:font.jp, color:C.ink }}>
-                  <div style={{ width:7, height:7, borderRadius:"50%", background:c }}/>
-                  {l}
-                </div>
-              ))}
-            </div>
-          </div>
-          {/* Bottom sheet */}
-          {selectedMarker ? (
-            <div className="slide-up" style={{ background:C.surface, borderTop:`1px solid ${C.border}`, padding:"8px 12px 6px", flexShrink:0 }}>
-              <div style={{ width:32, height:3, background:C.border, borderRadius:10, margin:"0 auto 8px" }}/>
-              <div style={{ fontSize:11, fontWeight:700, color:C.ink, marginBottom:6, fontFamily:font.jp }}>📍 {selectedMarker.store}</div>
-              <div className="hover-card" onClick={()=>onSelect(selectedMarker)}
-                style={{ display:"flex", alignItems:"center", gap:8, background:C.light, borderRadius:10,
-                  padding:"8px 10px", border:`1px solid #F5C060` }}>
-                <span style={{ fontSize:24 }}>🥚</span>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:11, fontWeight:700, color:C.ink, fontFamily:font.jp }}>{selectedMarker.store}</div>
-                  <div style={{ fontSize:10, color:C.muted, fontFamily:font.jp }}>{selectedMarker.confirmed}/{selectedMarker.pack}確定・{formatTime(selectedMarker.time)}集合</div>
-                </div>
-                <span style={{ fontSize:16, color:C.warm, fontWeight:700 }}>›</span>
-              </div>
-            </div>
-          ) : (
-            <div style={{ background:C.surface, borderTop:`1px solid ${C.border}`, padding:"8px 12px 6px", flexShrink:0 }}>
-              <div style={{ width:32, height:3, background:C.border, borderRadius:10, margin:"0 auto 8px" }}/>
-              <div style={{ fontSize:11, color:C.muted, textAlign:"center", fontFamily:font.jp }}>ピンをタップして募集を確認</div>
-            </div>
-          )}
+          <RealMapView listings={filtered} onSelect={onSelect} />
         </div>
       )}
 
@@ -703,10 +685,62 @@ const FeedScreen = ({ listings, loading, error, onRetry, onRefresh, locName, loc
 };
 
 /* ─────────────────────────────────────────────
+   他ユーザーのプロフィール（参加・主催回数）モーダル
+───────────────────────────────────────────── */
+const UserProfileModal = ({ userId, nickname, onClose }) => {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setError(false);
+    api.getUser(userId)
+      .then(u => { if (alive) { setData(u); setLoading(false); } })
+      .catch(() => { if (alive) { setError(true); setLoading(false); } });
+    return () => { alive = false; };
+  }, [userId]);
+
+  return (
+    <div onClick={onClose} style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.4)", zIndex:60,
+      display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
+      <div onClick={e=>e.stopPropagation()} className="pop-in"
+        style={{ background:C.surface, width:"100%", maxWidth:320, borderRadius:16, padding:"20px 18px", textAlign:"center" }}>
+        <div style={{ width:56, height:56, borderRadius:"50%", background:`linear-gradient(135deg,${C.warm},${C.yolk})`,
+          display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, fontWeight:700, color:"#fff", margin:"0 auto 10px" }}>
+          {(data?.nickname || nickname || "?").slice(0,1)}
+        </div>
+        <div style={{ fontSize:15, fontWeight:700, color:C.ink, fontFamily:font.jp }}>{data?.nickname || nickname || "ユーザー"}</div>
+        {data?.area_name && <div style={{ fontSize:10, color:C.muted, marginTop:2, fontFamily:font.jp }}>📍 {data.area_name}</div>}
+
+        {loading && <div style={{ padding:"18px 0" }}><div style={{ width:22, height:22, border:`3px solid ${C.border}`, borderTopColor:C.warm, borderRadius:"50%", animation:"spin 0.8s linear infinite", margin:"0 auto" }}/></div>}
+        {error && <div style={{ fontSize:11, color:C.muted, padding:"16px 0", fontFamily:font.jp }}>情報を取得できませんでした</div>}
+        {data && !loading && (
+          <div style={{ display:"flex", gap:8, marginTop:14 }}>
+            <div style={{ flex:1, background:C.surface2, borderRadius:10, padding:"10px 0" }}>
+              <div style={{ fontSize:18, fontWeight:700, color:C.dark, fontFamily:font.num }}>{data.hosted_count}</div>
+              <div style={{ fontSize:10, color:C.muted, fontFamily:font.jp }}>主催した回数</div>
+            </div>
+            <div style={{ flex:1, background:C.surface2, borderRadius:10, padding:"10px 0" }}>
+              <div style={{ fontSize:18, fontWeight:700, color:C.dark, fontFamily:font.num }}>{data.joined_count}</div>
+              <div style={{ fontSize:10, color:C.muted, fontFamily:font.jp }}>参加した回数</div>
+            </div>
+          </div>
+        )}
+        <button onClick={onClose} className="btn-press"
+          style={{ marginTop:16, width:"100%", padding:"9px 0", borderRadius:10, background:C.surface2,
+            border:`1px solid ${C.border}`, color:C.soft, fontSize:12, fontWeight:600, fontFamily:font.jp, cursor:"pointer" }}>閉じる</button>
+      </div>
+    </div>
+  );
+};
+
+/* ─────────────────────────────────────────────
    SCREEN: DETAIL
 ───────────────────────────────────────────── */
 const DetailScreen = ({ listing, onBack, onJoin, onBlock }) => {
   const [eggs, setEggs] = useState(2);
+  const [viewUser, setViewUser] = useState(null);  // タップしたメンバーのプロフィール表示
   const perEgg = Math.ceil(listing.price / listing.pack);
   const remaining = listing.pack - listing.confirmed;
   const available = Math.min(remaining, 5);
@@ -716,17 +750,7 @@ const DetailScreen = ({ listing, onBack, onJoin, onBlock }) => {
     <div style={{ display:"flex", flexDirection:"column", flex:1, overflow:"hidden" }}>
       <BackHeader title="募集詳細" onBack={onBack}/>
       {/* Map */}
-      <div style={{ width:"100%", height:105, background:"linear-gradient(145deg,#DFF0D8,#C5E1A5 50%,#A5D6A7)",
-        position:"relative", overflow:"hidden", flexShrink:0 }}>
-        <MapRoads/>
-        <div style={{ position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-100%)", fontSize:26,
-          filter:"drop-shadow(0 2px 6px rgba(0,0,0,0.28))" }}>📍</div>
-        <div style={{ position:"absolute", bottom:5, right:7, background:"rgba(255,255,255,0.93)",
-          borderRadius:7, padding:"2px 7px", fontSize:9, fontWeight:700, color:C.dark, fontFamily:font.jp }}>🚶 徒歩{Math.round(listing.dist/80)}分</div>
-        <div style={{ position:"absolute", bottom:5, left:7, background:C.warm, borderRadius:7,
-          padding:"3px 7px", fontSize:9, fontWeight:700, color:"#fff", fontFamily:font.jp, cursor:"pointer" }}>Google マップで開く</div>
-        <div style={{ position:"absolute", bottom:3, right:7, fontSize:7, color:"rgba(0,0,0,0.3)", fontFamily:font.num, bottom:0, right:5 }}>Powered by Google</div>
-      </div>
+      <RealStoreMap lat={listing.store_lat} lng={listing.store_lng} storeName={listing.store} />
 
       <div style={{ flex:1, overflowY:"auto", padding:"9px 11px", background:C.surface2, display:"flex", flexDirection:"column", gap:7 }}>
         {/* Info */}
@@ -757,8 +781,10 @@ const DetailScreen = ({ listing, onBack, onJoin, onBlock }) => {
             <div key={i} style={{ display:"flex", alignItems:"center", gap:8, padding:"7px 12px",
               borderTop:`1px solid ${C.border}` }}>
               <AvatarChip {...m} size={28}/>
-              <div style={{ flex:1 }}>
-                <div style={{ fontSize:11, fontWeight:600, color:C.ink, fontFamily:font.jp }}>
+              <div style={{ flex:1 }} onClick={()=>{ if (USE_API && m.userId) setViewUser(m); }}>
+                <div style={{ fontSize:11, fontWeight:600, color:C.ink, fontFamily:font.jp,
+                  cursor: (USE_API && m.userId) ? "pointer" : "default",
+                  textDecoration: (USE_API && m.userId) ? "underline" : "none", textUnderlineOffset:2 }}>
                   {(m.fullName || m.n + "さん")}{m.host?"（主催）":""}
                 </div>
                 <div style={{ fontSize:10, color:C.muted, fontFamily:font.jp }}>{m.eggs}個希望</div>
@@ -806,6 +832,11 @@ const DetailScreen = ({ listing, onBack, onJoin, onBlock }) => {
         </div>
         <div style={{ height:8 }}/>
       </div>
+
+      {viewUser && (
+        <UserProfileModal userId={viewUser.userId} nickname={viewUser.fullName}
+          onClose={()=>setViewUser(null)} />
+      )}
     </div>
   );
 };
@@ -815,44 +846,46 @@ const DetailScreen = ({ listing, onBack, onJoin, onBlock }) => {
 ───────────────────────────────────────────── */
 const PostScreen = ({ onBack, onSubmit }) => {
   const [store, setStore] = useState("");
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const [selectedStore, setSelectedStore] = useState(null);
+  const [storeLat, setStoreLat] = useState(null);
+  const [storeLng, setStoreLng] = useState(null);
   const [pack, setPack] = useState(10);
   const [size, setSize] = useState("M");
   const [price, setPrice] = useState("");
   const [myEggs, setMyEggs] = useState(2);
-  const [meetTime, setMeetTime] = useState("");
+  // 集合日時は初期値として「投稿日（今日）の18:00」を入れておく
+  const [meetTime, setMeetTime] = useState(() => {
+    const d = new Date();
+    const pad = n => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T18:00`;
+  });
   const [comment, setComment] = useState("");
   const [submitting, setSubmitting] = useState(false);
-
-  const suggestions = [
-    { name:"マルエツ渋谷店",     sub:"東京都渋谷区宇田川町… · 徒歩3分" },
-    { name:"マルエツ代官山店",   sub:"東京都渋谷区代官山町… · 徒歩8分" },
-    { name:"マルエツ中目黒店",   sub:"東京都目黒区上目黒… · 徒歩12分" },
-    { name:"オーケー渋谷神南店", sub:"東京都渋谷区神南… · 徒歩5分" },
-    { name:"まいばすけっと代官山",sub:"東京都渋谷区代官山… · 徒歩6分" },
-    { name:"サミット渋谷桜丘店", sub:"東京都渋谷区桜丘町… · 徒歩9分" },
-  ].filter(s => store.length > 0 && s.name.includes(store));
 
   // 場所はサジェスト選択 or 自由入力どちらでも有効
   const storeValid    = selectedStore !== null || store.trim().length > 0;
   const priceValid    = price.trim().length > 0 && parseInt(price) > 0;
   const meetTimeValid = meetTime.trim().length > 0;
+  const packNum       = Number(pack);
+  const packValid     = Number.isInteger(packNum) && packNum >= 1 && packNum <= 100;
+  const myEggsNum      = Number(myEggs);
+  // 希望個数は1個以上、かつパック数より少ない（他の人の分を残す）
+  const myEggsValid    = Number.isInteger(myEggsNum) && myEggsNum >= 1 && (!packValid || myEggsNum < packNum);
 
-  // 必要項目チェック（pack・size・myEggsはデフォルト値あり）
-  const valid = storeValid && priceValid && meetTimeValid;
+  // 必要項目チェック（sizeはデフォルト値あり）
+  const valid = storeValid && priceValid && meetTimeValid && packValid && myEggsValid;
 
   // 未入力フィールドをハイライト表示するため
-  const [touched, setTouched] = useState({ store:false, price:false, meetTime:false });
+  const [touched, setTouched] = useState({ store:false, price:false, meetTime:false, pack:false, myEggs:false });
   const touch = (field) => setTouched(prev => ({ ...prev, [field]:true }));
 
   const handleSubmit = () => {
-    setTouched({ store:true, price:true, meetTime:true });
+    setTouched({ store:true, price:true, meetTime:true, pack:true, myEggs:true });
     if (!valid) return;
     setSubmitting(true);
     const storeName = selectedStore ? selectedStore.name : store.trim();
     setTimeout(() => {
-      onSubmit({ store:storeName, pack, size, price:parseInt(price), myEggs, time:meetTime, comment:comment.trim() });
+      onSubmit({ store:storeName, storeLat, storeLng, pack, size, price:parseInt(price), myEggs, time:meetTime, comment:comment.trim() });
     }, 800);
   };
 
@@ -873,67 +906,42 @@ const PostScreen = ({ onBack, onSubmit }) => {
           <div style={{ fontSize:10, color:C.muted, marginBottom:6, fontWeight:600, fontFamily:font.jp }}>
             🔍 場所（スーパー名）<span style={{ color:C.red }}>*</span>
           </div>
-          <div style={{ display:"flex", alignItems:"center", gap:6, background:C.surface2, borderRadius:9,
-            padding:"6px 10px", border:`1px solid ${C.border}` }}>
-            <span style={{ fontSize:14 }}>📍</span>
-            <input value={store}
-              onChange={e=>{ setStore(e.target.value); setShowSuggestions(true); setSelectedStore(null); }}
-              onBlur={()=>touch("store")}
-              placeholder="例：マルエツ渋谷店"
-              style={{ border:"none", background:"transparent", fontSize:12, color:C.ink, outline:"none",
-                fontFamily:font.jp, flex:1, minWidth:0 }}/>
-            {store && <span onClick={()=>{ setStore(""); setSelectedStore(null); }} style={{ cursor:"pointer", fontSize:14, color:C.muted }}>×</span>}
-          </div>
-          {suggestions.length>0 && showSuggestions && (
-            <div style={{ borderRadius:9, border:`1px solid ${C.border}`, overflow:"hidden", marginTop:5 }}>
-              {suggestions.map((s,i)=>(
-                <div key={i} onClick={()=>{ setSelectedStore(s); setStore(s.name); setShowSuggestions(false); }}
-                  className="hover-card"
-                  style={{ padding:"7px 10px", fontSize:11, display:"flex", alignItems:"center", gap:6,
-                    borderBottom:i<suggestions.length-1?`1px solid ${C.border}`:"none",
-                    background:C.surface, fontFamily:font.jp }}>
-                  <span style={{ fontSize:14 }}>🏪</span>
-                  <div><div style={{ color:C.ink }}>{s.name}</div><div style={{ fontSize:9, color:C.muted }}>{s.sub}</div></div>
-                </div>
-              ))}
-            </div>
-          )}
+          <PlacesSearchInput onSelect={p => {
+            setSelectedStore(p);
+            setStore(p.name || "");
+            setStoreLat(p.lat || null);
+            setStoreLng(p.lng || null);
+          }} />
           {selectedStore
             ? <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:6, color:C.green, fontSize:10, fontWeight:600, fontFamily:font.jp }}>✓ {selectedStore.name} を選択しました</div>
-            : store.trim().length > 0
-              ? <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:6, color:C.mid, fontSize:10, fontFamily:font.jp }}>📝 「{store}」で登録します</div>
-              : touched.store ? errMsg("場所を入力してください") : null
+            : touched.store ? errMsg("場所を入力してください") : null
           }
         </div>
 
         {/* Map preview */}
-        {selectedStore && (
+        {selectedStore && storeLat && storeLng && (
           <div className="fade-up" style={{ background:C.surface, borderRadius:13, border:`1px solid ${C.border}`, padding:"10px 12px" }}>
             <div style={{ fontSize:10, color:C.muted, marginBottom:6, fontWeight:600, fontFamily:font.jp }}>📌 選択したお店の場所</div>
-            <div style={{ width:"100%", height:58, borderRadius:9, overflow:"hidden", position:"relative",
-              background:"linear-gradient(135deg,#DFF0D8,#B2DFDB)", display:"flex", alignItems:"center", justifyContent:"center" }}>
-              <div style={{ position:"absolute", top:"40%", left:0, right:0, height:2, background:"rgba(255,255,255,0.5)" }}/>
-              <div style={{ position:"absolute", left:"45%", top:0, bottom:0, width:2, background:"rgba(255,255,255,0.5)" }}/>
-              <span style={{ position:"relative", fontSize:20, zIndex:1 }}>📍</span>
-              <div style={{ position:"absolute", bottom:3, right:5, fontSize:7, color:"rgba(0,0,0,0.35)", fontFamily:font.num }}>Powered by Google</div>
-            </div>
+            <RealStoreMap lat={storeLat} lng={storeLng} storeName={store} />
           </div>
         )}
 
         {/* Pack size */}
-        <div className="fade-up" style={{ animationDelay:".04s", background:C.surface, borderRadius:13, border:`1px solid ${C.border}`, padding:"10px 12px" }}>
+        <div className="fade-up" style={{ animationDelay:".04s", background:C.surface, borderRadius:13,
+          border: touched.pack && !packValid ? `1px solid ${C.red}` : `1px solid ${C.border}`, padding:"10px 12px" }}>
           <div style={{ fontSize:10, color:C.muted, marginBottom:7, fontWeight:600, fontFamily:font.jp }}>何個入りを買いますか？</div>
-          <div style={{ display:"flex", gap:5 }}>
-            {[6,10,12].map(n=>(
-              <button key={n} onClick={()=>setPack(n)} className="btn-press"
-                style={{ flex:1, padding:"6px 0", borderRadius:8,
-                  border:pack===n?"none":`1px solid ${C.border}`,
-                  background:pack===n?C.warm:C.surface2,
-                  color:pack===n?"#fff":C.soft,
-                  fontSize:12, fontWeight:600, fontFamily:font.jp, cursor:"pointer", transition:"all 0.15s" }}>
-                {n}個入り
-              </button>
-            ))}
+          <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+            <select
+              value={pack}
+              onChange={e=>{ const n = parseInt(e.target.value); setPack(n); if (myEggs >= n) setMyEggs(Math.max(1, n-1)); }}
+              style={{ flex:1, padding:"8px 10px", borderRadius:8, background:C.surface2,
+                border:`1px solid ${C.border}`, fontSize:13, fontFamily:font.num, color:C.ink,
+                outline:"none", cursor:"pointer" }}>
+              {Array.from({length:30},(_,i)=>i+1).map(n=>(
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+            <span style={{ fontSize:12, color:C.muted, fontFamily:font.jp, whiteSpace:"nowrap" }}>個入り</span>
           </div>
         </div>
 
@@ -975,19 +983,23 @@ const PostScreen = ({ onBack, onSubmit }) => {
           </div>
           <div style={{ marginTop:8 }}>
             <div style={{ fontSize:9, color:C.muted, marginBottom:5, fontFamily:font.jp }}>自分の希望個数<span style={{ color:C.red }}>*</span></div>
-            <div style={{ display:"flex", gap:5 }}>
-              {Array.from({length:Math.min(pack,6)},(_,i)=>i+1).map(n=>(
-                <button key={n} onClick={()=>setMyEggs(n)} className="btn-press"
-                  style={{ width:36, height:30, borderRadius:8,
-                    border:myEggs===n?"none":`1px solid ${C.border}`,
-                    background:myEggs===n?C.warm:C.surface2,
-                    color:myEggs===n?"#fff":C.ink, fontSize:12, fontWeight:600,
-                    fontFamily:font.num, cursor:"pointer", transition:"all 0.15s" }}>{n}</button>
-              ))}
+            <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+              <select
+                value={myEggs}
+                onChange={e=>setMyEggs(parseInt(e.target.value))}
+                style={{ flex:1, padding:"8px 10px", borderRadius:8, background:C.surface2,
+                  border:`1px solid ${C.border}`, fontSize:13, fontFamily:font.num, color:C.ink,
+                  outline:"none", cursor:"pointer" }}>
+                {/* パック数より少ない個数だけ選べる（他の人の分を残す）*/}
+                {Array.from({length:Math.max(1,(packValid?packNum:2)-1)},(_,i)=>i+1).map(n=>(
+                  <option key={n} value={n}>{n}</option>
+                ))}
+              </select>
+              <span style={{ fontSize:12, color:C.muted, fontFamily:font.jp, whiteSpace:"nowrap" }}>個</span>
             </div>
           </div>
-          {price && <div style={{ marginTop:6, fontSize:10, color:C.mid, fontFamily:font.jp }}>
-            1個あたり ¥{Math.ceil(parseInt(price||0)/pack)} · あなたの分 ¥{myEggs*Math.ceil(parseInt(price||0)/pack)}
+          {price && packValid && <div style={{ marginTop:6, fontSize:10, color:C.mid, fontFamily:font.jp }}>
+            1個あたり ¥{Math.ceil(parseInt(price||0)/packNum)} · あなたの分 ¥{myEggs*Math.ceil(parseInt(price||0)/packNum)}
           </div>}
         </div>
 
@@ -1227,22 +1239,53 @@ const BlocksScreen = ({ onBack, showToast }) => {
 /* ─────────────────────────────────────────────
    SCREEN: PROFILE（マイページ）
 ───────────────────────────────────────────── */
-const ProfileScreen = ({ joinedListings, postedListings, onNavigate, onManageBlocks, unreadTotal }) => {
+const ProfileScreen = ({ joinedListings, postedListings, onNavigate, onManageBlocks, unreadTotal, currentUser, onLogout, onUpdateUser }) => {
   const [editName, setEditName] = useState(false);
-  const [name, setName] = useState("田中 さくら");
-  const [nameInput, setNameInput] = useState("田中 さくら");
-  const [area, setArea] = useState("渋谷区・代官山エリア");
+  const [name, setName] = useState(currentUser?.nickname || "ゲスト");
+  const [nameInput, setNameInput] = useState(currentUser?.nickname || "ゲスト");
+  const [area, setArea] = useState((currentUser?.area_name && currentUser.area_name.trim()) || "エリア未設定");
+  const [editArea, setEditArea] = useState(false);
+  const [pendingArea, setPendingArea] = useState(null);  // { name, lat, lng }
+  const [savingArea, setSavingArea] = useState(false);
+  const [locatingArea, setLocatingArea] = useState(false);
+
+  // 現在地（GPS）を活動エリアに設定（Google Maps キーに依存しない）
+  const useCurrentLocationAsArea = () => {
+    if (!navigator.geolocation) return;
+    setLocatingArea(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { setPendingArea({ name:"現在地周辺", lat:pos.coords.latitude, lng:pos.coords.longitude }); setLocatingArea(false); },
+      ()    => { setLocatingArea(false); },
+      { enableHighAccuracy:true, timeout:8000 }
+    );
+  };
+
+  const handleSaveArea = async () => {
+    if (!pendingArea || typeof pendingArea.lat !== "number" || typeof pendingArea.lng !== "number") return;
+    setSavingArea(true);
+    try {
+      if (USE_API) {
+        await api.updateMe({ area_name: pendingArea.name, area_lat: pendingArea.lat, area_lng: pendingArea.lng });
+      }
+      setArea(pendingArea.name);
+      onUpdateUser && onUpdateUser({ area_name: pendingArea.name, area_lat: pendingArea.lat, area_lng: pendingArea.lng });
+      setEditArea(false);
+      setPendingArea(null);
+    } catch (e) {
+      // 失敗時はモーダルを開いたままにする
+    } finally {
+      setSavingArea(false);
+    }
+  };
 
   const stats = [
     { label:"参加した購入", value: joinedListings.length, unit:"回" },
     { label:"主催した募集",  value: postedListings.length, unit:"回" },
-    { label:"評価スコア",    value:"4.9", unit:"⭐" },
-    { label:"節約した金額",  value:`¥${(joinedListings.length * 210).toLocaleString()}`, unit:"" },
   ];
 
   const menuSections = [
     { title:"アカウント", items:[
-      { icon:"📍", label:"活動エリア", value:area },
+      { icon:"📍", label:"活動エリア", value:area, action: ()=>{ setPendingArea(null); setEditArea(true); } },
       { icon:"🔔", label:"通知設定" },
       { icon:"🚫", label:"ブロックしたユーザー", action: onManageBlocks },
       { icon:"🔒", label:"プライバシー設定" },
@@ -1255,7 +1298,7 @@ const ProfileScreen = ({ joinedListings, postedListings, onNavigate, onManageBlo
     ]},
     { title:"その他", items:[
       { icon:"⭐", label:"アプリを評価する" },
-      { icon:"🚪", label:"ログアウト", danger:true },
+      { icon:"🚪", label:"ログアウト", danger:true, action: onLogout },
     ]},
   ];
 
@@ -1286,7 +1329,7 @@ const ProfileScreen = ({ joinedListings, postedListings, onNavigate, onManageBlo
                   <input value={nameInput} onChange={e=>setNameInput(e.target.value)}
                     style={{ flex:1, padding:"4px 8px", borderRadius:7, border:`1px solid ${C.border}`,
                       fontSize:13, fontFamily:font.jp, color:C.ink, outline:"none", background:C.surface2 }}/>
-                  <button onClick={()=>{ setName(nameInput); setEditName(false); }} className="btn-press"
+                  <button onClick={async ()=>{ if (USE_API) { try { await api.updateMe({ nickname: nameInput }); } catch(e) {} } setName(nameInput); setEditName(false); }} className="btn-press"
                     style={{ padding:"4px 9px", borderRadius:7, background:C.warm, border:"none",
                       color:"#fff", fontSize:11, fontWeight:700, fontFamily:font.jp, cursor:"pointer" }}>保存</button>
                   <button onClick={()=>{ setNameInput(name); setEditName(false); }} className="btn-press"
@@ -1305,7 +1348,7 @@ const ProfileScreen = ({ joinedListings, postedListings, onNavigate, onManageBlo
                 <span style={{ fontSize:10, background:C.greenBg, color:C.green, borderRadius:6,
                   padding:"1px 7px", fontWeight:600, fontFamily:font.jp }}>✓ 認証済み</span>
                 <span style={{ fontSize:10, background:C.light, color:C.mid, borderRadius:6,
-                  padding:"1px 7px", fontWeight:600, fontFamily:font.jp }}>⭐ 4.9</span>
+                  padding:"1px 7px", fontWeight:600, fontFamily:font.jp }}>🙌 主催{postedListings.length}・参加{joinedListings.length}</span>
               </div>
             </div>
           </div>
@@ -1350,6 +1393,58 @@ const ProfileScreen = ({ joinedListings, postedListings, onNavigate, onManageBlo
 
         <div style={{ height:20 }}/>
       </div>
+
+      {/* 活動エリア編集モーダル（候補リストが下に開くため上寄せのカード型）*/}
+      {editArea && (
+        <div onClick={()=>!savingArea && setEditArea(false)}
+          style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.4)", zIndex:50,
+            display:"flex", alignItems:"flex-start", justifyContent:"center", paddingTop:54, paddingLeft:14, paddingRight:14 }}>
+          <div onClick={e=>e.stopPropagation()} className="fade-up"
+            style={{ background:C.surface, width:"100%", maxWidth:420, borderRadius:16, padding:"16px 16px 18px" }}>
+            <div style={{ fontSize:14, fontWeight:700, color:C.ink, fontFamily:font.jp, marginBottom:3 }}>📍 活動エリアを設定</div>
+            <div style={{ fontSize:11, color:C.muted, fontFamily:font.jp, marginBottom:12, lineHeight:1.6 }}>
+              よく使う駅や地名を検索してください。位置情報を許可しないとき、この周辺の募集が表示されます。
+            </div>
+            <PlacesSearchInput
+              types={["geocode"]}
+              placeholder="駅名・地名で検索（例：西日暮里）"
+              onSelect={p => {
+                if (typeof p.lat === "number" && typeof p.lng === "number") {
+                  setPendingArea({ name: p.name || "", lat: p.lat, lng: p.lng });
+                }
+              }}
+            />
+            {/* 検索が使えないとき用：現在地から設定（Maps キー不要）*/}
+            <button onClick={useCurrentLocationAsArea} disabled={locatingArea} className="btn-press"
+              style={{ width:"100%", marginTop:8, padding:"9px 0", borderRadius:9, background:C.surface2,
+                border:`1px solid ${C.border}`, color:C.soft, fontSize:12, fontWeight:600, fontFamily:font.jp,
+                cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+              {locatingArea
+                ? <><span style={{ width:13, height:13, border:`2px solid ${C.border}`, borderTopColor:C.warm, borderRadius:"50%", animation:"spin 0.8s linear infinite" }}/> 取得中…</>
+                : "📍 現在地から設定"}
+            </button>
+            {pendingArea && (
+              <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:8, color:C.green,
+                fontSize:11, fontWeight:600, fontFamily:font.jp }}>✓ {pendingArea.name} を選択しました</div>
+            )}
+            <div style={{ display:"flex", gap:8, marginTop:16 }}>
+              <button onClick={()=>setEditArea(false)} disabled={savingArea} className="btn-press"
+                style={{ flex:1, padding:"10px 0", borderRadius:10, background:C.surface2,
+                  border:`1px solid ${C.border}`, color:C.soft, fontSize:13, fontWeight:600,
+                  fontFamily:font.jp, cursor:"pointer" }}>キャンセル</button>
+              <button onClick={handleSaveArea} disabled={!pendingArea || savingArea} className="btn-press"
+                style={{ flex:2, padding:"10px 0", borderRadius:10,
+                  background: (!pendingArea || savingArea) ? C.border : C.warm, border:"none",
+                  color:"#fff", fontSize:13, fontWeight:700, fontFamily:font.jp,
+                  cursor: (!pendingArea || savingArea) ? "default" : "pointer",
+                  display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+                {savingArea && <span style={{ width:14, height:14, border:"2px solid rgba(255,255,255,0.4)", borderTopColor:"#fff", borderRadius:"50%", animation:"spin 0.8s linear infinite" }}/>}
+                このエリアに設定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <BottomNav active="profile" onNavigate={onNavigate} myBadge={unreadTotal}/>
     </div>
@@ -1959,7 +2054,7 @@ const PhoneFrame = ({ children }) => (
    APP ROOT
 ───────────────────────────────────────────── */
 export default function App() {
-  const [screen, setScreen] = useState("onboard");
+  const [screen, setScreen] = useState(USE_API && authToken ? "loading" : "onboard");
   const [listings, setListings] = useState(USE_API ? [] : INIT_LISTINGS);
   const [selected, setSelected] = useState(null);
   const [joinedEggs, setJoinedEggs] = useState(0);
@@ -1970,7 +2065,10 @@ export default function App() {
   const [coords, setCoords] = useState({ lat:35.6595, lng:139.7005 }); // デフォルト：渋谷駅
   const [locName, setLocName] = useState("渋谷区周辺");
   const [locating, setLocating] = useState(false);
+  const [radius, setRadius] = useState(2000);  // 探索半径（メートル）
+  const didAutoLocate = useRef(false);          // 起動時のGPS自動取得を一度だけ行う
   const [toast, setToast] = useState(null);  // { msg, type }
+  const [authUser, setAuthUser] = useState(null);
   const [chatBackTo, setChatBackTo] = useState("my");  // チャットから戻る画面
   // チャット未読管理：{ listingId: 最後に開いた時刻(ms) } と { listingId: 最新メッセージ時刻(ms) }
   const [chatLastSeen, setChatLastSeen] = useState({});
@@ -2026,20 +2124,29 @@ export default function App() {
       },
       (err) => {
         setLocating(false);
-        setError("現在地の取得が許可されませんでした");
+        // 位置情報が許可されなければ、登録した活動エリアにフォールバック
+        if (authUser && typeof authUser.area_lat === "number" && typeof authUser.area_lng === "number") {
+          const c = { lat: authUser.area_lat, lng: authUser.area_lng };
+          setCoords(c);
+          setLocName((authUser.area_name && authUser.area_name.trim()) ? authUser.area_name : "登録エリア周辺");
+          if (USE_API) fetchListings(c);
+        } else if (USE_API) {
+          fetchListings();  // それも無ければ既定（渋谷）で取得
+        }
       },
       { enableHighAccuracy: true, timeout: 8000 }
     );
   };
 
   // ── 募集一覧の取得（API有効時のみ）──
-  const fetchListings = async (c) => {
+  const fetchListings = async (c, r) => {
     if (!USE_API) return;
     const loc = c || coords;
+    const rad = r || radius;
     setLoading(true);
     setError(null);
     try {
-      const res = await api.getListings({ lat:loc.lat, lng:loc.lng, radius:2000 });
+      const res = await api.getListings({ lat:loc.lat, lng:loc.lng, radius:rad });
       setListings((res.listings || []).map(adaptListing));
     } catch (e) {
       setError(e.message || "募集の取得に失敗しました");
@@ -2048,9 +2155,64 @@ export default function App() {
     }
   };
 
-  // フィードに入ったら取得
+  // ── 探索半径の変更（即座に再取得）──
+  const handleRadiusChange = (r) => {
+    setRadius(r);
+    if (USE_API) fetchListings(coords, r);
+  };
+
+  // ── 起動時にトークンを検証してセッションを復元 ──
   useEffect(() => {
-    if (USE_API && screen === "feed") fetchListings();
+    if (!USE_API || !authToken) return;
+    api.getMe()
+      .then(user => {
+        currentUserId = user.id;
+        setAuthUser(user);
+        setScreen("feed");
+      })
+      .catch(() => {
+        authToken = null;
+        localStorage.removeItem("auth_token");
+        setScreen("onboard");
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleAuth = ({ token, user }) => {
+    authToken = token;
+    currentUserId = user.id;
+    localStorage.setItem("auth_token", token);
+    setAuthUser(user);
+    setScreen("feed");
+  };
+
+  const handleLogout = () => {
+    authToken = null;
+    currentUserId = null;
+    localStorage.removeItem("auth_token");
+    setAuthUser(null);
+    setListings([]);
+    setJoinedIds([]);
+    setPostedIds([]);
+    setScreen("onboard");
+  };
+
+  // プロフィール更新（活動エリア等）をローカルの authUser に反映
+  const handleUpdateUser = (patch) => {
+    setAuthUser(prev => prev ? { ...prev, ...patch } : prev);
+  };
+
+  // フィードに入ったら取得。初回だけ現在地(GPS)を自動取得し、その周辺を表示する。
+  // （2回目以降はGPS再要求せず、保持している位置で取得）
+  useEffect(() => {
+    if (USE_API && screen === "feed") {
+      if (!didAutoLocate.current) {
+        didAutoLocate.current = true;
+        getCurrentLocation();   // 成功/失敗どちらでも内部で fetchListings を呼ぶ
+      } else {
+        fetchListings();
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen]);
 
@@ -2082,11 +2244,11 @@ export default function App() {
     setScreen("confirmed");
   };
 
-  const handlePost = async ({ store, pack, size, price, myEggs, time, comment }) => {
+  const handlePost = async ({ store, storeLat, storeLng, pack, size, price, myEggs, time, comment }) => {
     if (USE_API) {
       try {
         const created = await api.createListing({
-          store_name: store, store_lat: coords.lat, store_lng: coords.lng,
+          store_name: store, store_lat: storeLat ?? coords.lat, store_lng: storeLng ?? coords.lng,
           pack_size: pack, egg_size: size, price_total: price,
           poster_eggs: myEggs, meet_at: new Date(time).toISOString(), comment,
         });
@@ -2295,10 +2457,16 @@ export default function App() {
 
   const renderScreen = () => {
     switch(screen) {
-      case "onboard":  return <OnboardScreen onStart={()=>setScreen("feed")}/>;
+      case "loading":  return (
+                         <div style={{ display:"flex", flex:1, alignItems:"center", justifyContent:"center", background:C.surface }}>
+                           <div style={{ width:32, height:32, border:`3px solid ${C.border}`, borderTopColor:C.warm, borderRadius:"50%", animation:"spin 0.8s linear infinite" }}/>
+                         </div>
+                       );
+      case "onboard":  return <AuthScreen onAuth={handleAuth}/>;
       case "feed":     return <FeedScreen listings={listings} loading={loading} error={error}
                                 onRetry={()=>fetchListings()} onRefresh={()=>fetchListings()}
                                 locName={locName} locating={locating} onLocate={getCurrentLocation}
+                                radius={radius} onRadiusChange={handleRadiusChange}
                                 notifications={notifications}
                                 onSelect={l=>{ setSelected(l); setScreen("detail"); }} onPost={()=>setScreen("post")} onNavigate={navigate} unreadTotal={unreadCount}/>;
       case "detail":   return selected ? <DetailScreen listing={selected} onBack={()=>setScreen("feed")} onJoin={handleJoin} onBlock={handleBlockUser}/> : null;
@@ -2319,7 +2487,7 @@ export default function App() {
       case "edit":     return selected ? <EditScreen listing={selected} onBack={()=>setScreen("my")} onSubmit={handleEditListing}/> : null;
       case "review":   return selected ? <ReviewScreen listing={selected} onBack={()=>setScreen("my")} onSubmit={handleReviewSubmit}/> : null;
       case "chat":     return selected ? <ChatScreen listing={selected} onBack={()=>setScreen(chatBackTo)} onLatest={reportLatest}/> : null;
-      case "profile":  return <ProfileScreen joinedListings={joinedListings} postedListings={postedListings} onNavigate={navigate} onManageBlocks={()=>setScreen("blocks")} unreadTotal={unreadCount}/>;
+      case "profile":  return <ProfileScreen joinedListings={joinedListings} postedListings={postedListings} onNavigate={navigate} onManageBlocks={()=>setScreen("blocks")} unreadTotal={unreadCount} currentUser={authUser} onLogout={handleLogout} onUpdateUser={handleUpdateUser}/>;
       case "blocks":   return <BlocksScreen onBack={()=>setScreen("profile")} showToast={showToast}/>;
       default:         return null;
     }
